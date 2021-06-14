@@ -1,0 +1,4 @@
+可以直接用的框架:https://github.com/luozhouyang/transformers-keras
+BERT使用说明和所有的预训练模型:https://github.com/google-research/bert
+文本分类的实现:https://zhuanlan.zhihu.com/p/91533809
+NSP的实现: https://www.thinbug.com/q/55111360
