@@ -2,7 +2,6 @@ from operator import mod, ne
 from re import T
 from typing import List
 from click.termui import progressbar
-from keras_bert import load_trained_model_from_checkpoint, Tokenizer
 from numpy.lib.arraypad import _pad_simple
 from tensorflow.python.eager.context import device
 from transformers import BartModel, modelcard
@@ -14,18 +13,13 @@ import keras as ks
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 import torch
 from transformers.utils.dummy_pt_objects import MODEL_MAPPING
-from transformers_keras import Bert
 import tensorflow as tf
 from transformers import BertTokenizer, BertForNextSentencePrediction
-from transformers import *
 from torch.nn.functional import softmax
-from transformers_keras.modeling_bert import BertEmbedding
 from tqdm import tqdm
 from transformers import AdamW
 from torch.utils.data import DataLoader
-from datasets import load_dataset
-
-#dataset = load_dataset('glue', 'mrpc', split='train')
+from datasets import load_metric
 
 #Preparing the Data
 
@@ -171,7 +165,7 @@ inputs = tokenizer(sentences_A,
                    truncation=True,
                    padding='max_length')
 inputs['labels'] = torch.LongTensor([train_label]).T
-inputs.set_format("torch")
+
 
 #Dataloader
 class buildDataset(torch.utils.data.Dataset):
@@ -190,7 +184,7 @@ class buildDataset(torch.utils.data.Dataset):
 
 BATCH_SIZE = 10
 torchDataSet = buildDataset(inputs)
-train_Loader = DataLoader(torchDataSet, batch_size=16, shuffle=True)
+train_Loader = DataLoader(torchDataSet, batch_size=8, shuffle=True)
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device(
     "cpu")
@@ -202,12 +196,12 @@ optim = AdamW(model.parameters(), lr=5e-6)
 
 num_epochs = 2
 num_train_steps = num_epochs * len(train_Loader)
-progress_bar = tqdm(range(num_train_steps))
+#progress_bar = tqdm(range(num_train_steps))
 model.train()
 
 for epoch in range(num_epochs):
-    for batch in train_Loader:
-        '''
+    loop = tqdm(train_Loader, leave=True)
+    for batch in loop:
         optim.zero_grad()
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
@@ -217,17 +211,58 @@ for epoch in range(num_epochs):
         batch = {k: v.to(device) for k, v in batch.items()}
 
         outputs = model(**batch)
-
+        '''
+        outputs = model(input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels)
         loss = outputs.loss
 
         loss.backward()
         optim.step()
         optim.zero_grad()
-        progress_bar.update(1)
-        '''
+        #progress_bar.update(1)
+
         loop.set_description(f'Epoch {epoch}')
         loop.set_postfix(loss=loss.item())
-        '''
+
+sentences_A = dev_list[:, :1]
+sentences_B = dev_list[:, 1:]
+sentences_A = sentences_A.flatten().tolist()
+sentences_B = sentences_B.flatten().tolist()
+dev_label = devY.flatten().tolist()
+
+inputs = tokenizer(sentences_A,
+                   sentences_B,
+                   return_tensors='pt',
+                   max_length=512,
+                   truncation=True,
+                   padding='max_length')
+inputs['labels'] = torch.LongTensor([dev_label]).T
+
+torchDataSet = buildDataset(inputs)
+dev_Loader = DataLoader(torchDataSet, batch_size=8, shuffle=True)
+
+progress_bar = tqdm(dev_Loader, leave=True)
+
+metric = load_metric("accuracy")
+for batch in progress_bar:
+    optim.zero_grad()
+    input_ids = batch['input_ids'].to(device)
+    attention_mask = batch['attention_mask'].to(device)
+    token_type_ids = batch['token_type_ids'].to(device)
+    labels = batch['labels'].to(device)
+    with torch.no_grad():
+        outputs = model(input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels)
+
+    logits = outputs.logits
+    preds = torch.argmax(logits, dim=-1)
+    metric.add_batch(predictions=preds, references=batch['labels'].flatten())
+
+final_score = metric.compute()
+#打印最终分数
+print('final score: ', final_score)
 
 # a model's output is a tuple, we only need the output tensor containing
 # the relationships which is the first item in the tuple
