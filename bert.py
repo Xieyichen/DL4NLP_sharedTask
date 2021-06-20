@@ -3,7 +3,6 @@ from re import T
 from typing import List
 from click.termui import progressbar
 from numpy.lib.arraypad import _pad_simple
-from tensorflow.python.eager.context import device
 from transformers import BartModel, modelcard
 import numpy as np
 import codecs
@@ -182,9 +181,9 @@ class buildDataset(torch.utils.data.Dataset):
         return len(self.encodes.input_ids)
 
 
-BATCH_SIZE = 10
+BATCH_SIZE = 30
 torchDataSet = buildDataset(inputs)
-train_Loader = DataLoader(torchDataSet, batch_size=8, shuffle=True)
+train_Loader = DataLoader(torchDataSet, batch_size=BATCH_SIZE, shuffle=True)
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device(
     "cpu")
@@ -194,7 +193,7 @@ model.to(device)
 
 optim = AdamW(model.parameters(), lr=5e-6)
 
-num_epochs = 2
+num_epochs = 6
 num_train_steps = num_epochs * len(train_Loader)
 #progress_bar = tqdm(range(num_train_steps))
 model.train()
@@ -207,7 +206,7 @@ for epoch in range(num_epochs):
         attention_mask = batch['attention_mask'].to(device)
         token_type_ids = batch['token_type_ids'].to(device)
         labels = batch['labels'].to(device)
-        '''
+        '''§
         batch = {k: v.to(device) for k, v in batch.items()}
 
         outputs = model(**batch)
@@ -245,6 +244,8 @@ dev_Loader = DataLoader(torchDataSet, batch_size=8, shuffle=True)
 progress_bar = tqdm(dev_Loader, leave=True)
 
 metric = load_metric("accuracy")
+print('train finished')
+
 for batch in progress_bar:
     optim.zero_grad()
     input_ids = batch['input_ids'].to(device)
@@ -253,6 +254,7 @@ for batch in progress_bar:
     labels = batch['labels'].to(device)
     with torch.no_grad():
         outputs = model(input_ids,
+                        token_type_ids=token_type_ids,
                         attention_mask=attention_mask,
                         labels=labels)
 
@@ -263,6 +265,51 @@ for batch in progress_bar:
 final_score = metric.compute()
 #打印最终分数
 print('final score: ', final_score)
+
+#test中所有句子对的第一句和question bank中所有句子进行组合，feed进model
+#def getTop50(test_list, model, question_bank_list):
+unranked_list = []
+
+
+def getTop50(query, question):
+    inputs = tokenizer(query,
+                       question,
+                       return_tensors='pt',
+                       max_length=512,
+                       truncation=True,
+                       padding='max_length')
+    outputs = model(**inputs)
+    logits = outputs.logits
+    probs = softmax(logits, dim=1)
+    prob = probs[0]
+    t = (query, question, prob[0].item())
+    return t
+
+
+#best_one := list[('sentenceA', 'sentenceB', prob) x len(sentence_A)]
+#
+#ranked_list := list[list[ ('sentenceA', 'sentenceB', prob) x 50 ] x len(sentence_A)]
+
+from multiprocessing.dummy import Pool as ThreadPool
+
+temp = test_list[:1, :1]
+zip_obj = zip(temp.repeat(len(question_bank_list)), question_bank_list)
+pool = ThreadPool(2)
+results = [
+    pool.apply_async(getTop50, args=(query, question))
+    for query, question in zip_obj
+]
+results = [p.get() for p in results]
+ranked_list = sorted(results, key=lambda x: x[2], reverse=True)
+best_one = ranked_list[0]
+print("best_one", best_one)
+top_50 = ranked_list[:50]
+print("top50", top_50)
+'''
+best_one, ranked_list = getTop50(test_list=test_list[:1],
+                                 model=model,
+                                 question_bank_list=question_bank_list)
+'''
 
 # a model's output is a tuple, we only need the output tensor containing
 # the relationships which is the first item in the tuple
