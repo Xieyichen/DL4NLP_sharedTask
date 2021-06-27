@@ -32,7 +32,7 @@ answer_path = os.path.join("result", "answer.txt")
 inputs_path = os.path.join("prepared_inputs.txt")
 
 question_bank = pd.read_csv(question_bank_path, sep='\t', header=0)
-test_file = pd.read_csv(test_file_path, sep='\t', header=0)
+test_file = pd.read_csv(test_file_path, sep='\t', header=None)
 text_file = pd.read_csv(train_file_path, sep='\t', header=0)
 
 #calculate max count of questions, which have the same query
@@ -174,23 +174,21 @@ class buildDataset(torch.utils.data.Dataset):
         return len(self.encodes.input_ids)
 
 
-BATCH_SIZE = 15
+BATCH_SIZE = 4
 torchDataSet = buildDataset(inputs)
 train_Loader = DataLoader(torchDataSet, batch_size=BATCH_SIZE, shuffle=True)
 
-device = torch.device("cuda")
+optim = AdamW(model.parameters(), lr=3e-6)
 
-#Build Model
-model.to(device)
-
-optim = AdamW(model.parameters(), lr=3e-7)
-
-num_epochs = 3
+num_epochs = 4
 num_train_steps = num_epochs * len(train_Loader)
 #progress_bar = tqdm(range(num_train_steps))
 
 
 def startTrain():
+    device = torch.device("cuda")
+    #Build Model
+    model.to(device)
     model.train()
     for epoch in range(num_epochs):
         loop = tqdm(train_Loader, leave=True)
@@ -242,6 +240,7 @@ def startEval():
     for batch in progress_bar:
         optim.zero_grad()
         input_ids = batch['input_ids'].to(device)
+        print(batch['input_ids'])
         attention_mask = batch['attention_mask'].to(device)
         token_type_ids = batch['token_type_ids'].to(device)
         labels = batch['labels'].to(device)
@@ -265,15 +264,13 @@ def startEval():
 #def getTop50(test_list, model, question_bank_list):
 unranked_list = []
 
-startTrain()
+#startTrain()
 device = torch.device('cuda')
 checkpoint = torch.load(model_path)
 model.load_state_dict(checkpoint['model_state_dict'])
 optim.load_state_dict(checkpoint['optimizer_state_dict'])
 model.to(device)
-startEval()
-device = torch.device('cpu')
-model.to(device)
+#startEval()
 
 
 def getTop50(query, question):
@@ -300,11 +297,10 @@ def getTop50(query, question):
 #ranked_list := list[list[ ('sentenceA', 'sentenceB', prob) x 50 ] x len(sentence_A)]
 
 from multiprocessing.dummy import Pool as ThreadPool
-
-
+'''
 def getResult():
     result = []
-    for q in test_list:
+    for q in test_list[30:]:
         l = []
         l.append(q[0])
         zip_obj = zip(q.repeat(len(question_bank_list)), question_bank_list)
@@ -328,29 +324,68 @@ def getResult():
         fileObject.close()
         result.append(l)
     return result
+'''
+
+
+def predInputs(query, question_bank_list):
+    qeuries = query.repeat(len(question_bank_list))
+    qeuries = qeuries.flatten().tolist()
+    qids = question_bank_list[:, :1].flatten().tolist()
+    question_bank_list = question_bank_list[:, 1:].flatten().tolist()
+    inputs = tokenizer(qeuries,
+                       question_bank_list,
+                       return_tensors='pt',
+                       max_length=512,
+                       truncation=True,
+                       padding='max_length')
+    torchDataSet = buildDataset(inputs)
+    pred_Loader = DataLoader(torchDataSet, batch_size=1, shuffle=False)
+    loop = tqdm(pred_Loader, leave=True)
+    result_question_list = []
+    for batch, s in zip(loop, qids):
+        optim.zero_grad()
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
+        token_type_ids = batch['token_type_ids'].to(device)
+        t = getProbs(input_ids, attention_mask, token_type_ids, query, s)
+        result_question_list.append(t)
+        loop.set_description(f'prediction for {query}')
+        loop.set_postfix(question=s)
+    return result_question_list
+
+
+def getResult():
+    result = []
+    print("start prediction")
+    for q in test_list[:]:
+        l = []
+        l.append(q[0])
+        results = predInputs(q, question_bank_list)
+        ranked_list = sorted(results, key=lambda x: x[2], reverse=True)
+        ranked_list = list(map(lambda t: t[1], ranked_list))
+        top_50 = ranked_list[:50]
+        l = l + top_50
+        strline = q[0] + '\t'
+        fileObject = open(answer_path, 'a')
+        for w in top_50:
+            strline = strline + w + ','
+        strline = strline[:-1]
+        strline = strline + '\n'
+        fileObject.write(strline)
+        fileObject.close()
+        result.append(l)
+    return result
+
+
+def getProbs(input_ids, attention_mask, token_type_ids, query, qids):
+    outputs = model(input_ids,
+                    attention_mask=attention_mask,
+                    token_type_ids=token_type_ids)
+    logits = outputs.logits
+    probs = softmax(logits, dim=1)
+    prob = probs[0]
+    t = (query, qids, prob[0].item())
+    return t
 
 
 result = getResult()
-'''
-list1 = list(map(lambda t: t[1:], result))
-qs1 = list(map(lambda t: t[:1], result))
-
-list2 = list(map(lambda w: w.split(','), answer_file.values[:, 1:]))
-qs2 = answer_file.values[:, :1]
-bool_map = []
-if len(result) == answer_file.value.shape[0]:
-    for l1, l2, q1, q2 in zip(list1, list2, qs1, qs2):
-        if q1 == q2[0]:
-            b = 0
-            for t1, t2 in zip(l1, l2):
-                if t1 == t2:
-                    b = b + 1
-            bool_map.append(b)
-        else:
-            print('queries unmatch')
-else:
-    print('lines unmatch')
-
-ps = list(map(lambda x: b / 50, bool_map))
-print(ps)
-'''
