@@ -19,10 +19,8 @@ from tqdm import tqdm
 from transformers import AdamW
 from torch.utils.data import DataLoader
 from datasets import load_metric
-from tensorflow.python import pywrap_tensorflow
 
 #Preparing the Data
-np.random.seed(36)
 
 question_bank_path = os.path.join("data", "question_bank.tsv")
 test_file_path = os.path.join("data", "test_set.tsv")
@@ -56,32 +54,18 @@ model = BertForNextSentencePrediction.from_pretrained('bert-base-uncased')
 
 #rotate second colum of text file(training.tsv)
 t_text_list = np.transpose(text_list)
-
 neg_Sample = np.concatenate((t_text_list[0].reshape((t_text_list.shape[1]), 1),
                              np.append(t_text_list[1, SHIFT_OFFSET:],
                                        t_text_list[1, :SHIFT_OFFSET]).reshape(
                                            (t_text_list.shape[1], 1))),
                             axis=1)
-'''
-new_neg_sentA = text_list[:, :1]
-new_neg_sentB = text_list[:, 1:]
-np.random.shuffle(new_neg_sentB)
-
-for i in range(new_neg_sentB.shape[0]):
-    if new_neg_sentB[i][0] == text_list[i][1]:
-        b = text_list[(i + SHIFT_OFFSET) % new_neg_sentB.shape[0]][1]
-
-neg_Sample = np.c_[new_neg_sentA, new_neg_sentB]
-
-for b, l in zip(neg_Sample, text_list[:, 1:]):
-    if b[0] == l[0]:
-        print("false neg sample founded")
-'''
 
 NUM_TRAIN_SAMPLE = int(0.9 * text_list.shape[0])
 NUM_DEV_SAMPLE = text_list.shape[0] - NUM_TRAIN_SAMPLE
 NEG_SAMPLE_RITO = 0.5
 NUM_NEG_SAMPLE = int(NEG_SAMPLE_RITO * NUM_TRAIN_SAMPLE)
+
+np.random.seed(41)
 
 
 # save
@@ -134,13 +118,13 @@ sentences_B = sentences_B.flatten().tolist()
 train_label = trainY.flatten().tolist()
 
 #inputs.keys() := dict_keys(['input_ids', 'token_type_ids', 'attention_mask'])
-train_inputs = tokenizer(sentences_A,
-                         sentences_B,
-                         return_tensors='pt',
-                         max_length=512,
-                         truncation=True,
-                         padding='max_length')
-train_inputs['labels'] = torch.LongTensor(train_label).T
+inputs = tokenizer(sentences_A,
+                   sentences_B,
+                   return_tensors='pt',
+                   max_length=512,
+                   truncation=True,
+                   padding='max_length')
+inputs['labels'] = torch.LongTensor(train_label).T
 
 
 #Dataloader
@@ -158,18 +142,18 @@ class buildDataset(torch.utils.data.Dataset):
         return len(self.encodes.input_ids)
 
 
-optim = AdamW(model.parameters(), lr=5e-6)
+BATCH_SIZE = 10
+torchDataSet = buildDataset(inputs)
+train_Loader = DataLoader(torchDataSet, batch_size=BATCH_SIZE, shuffle=True)
+
+optim = AdamW(model.parameters(), lr=3e-7)
+
+num_epochs = 3
+num_train_steps = num_epochs * len(train_Loader)
+#progress_bar = tqdm(range(num_train_steps))
 
 
-def startTrain(train_inputs, batch_size, num_epochs):
-    BATCH_SIZE = batch_size
-    torchDataSet = buildDataset(train_inputs)
-    train_Loader = DataLoader(torchDataSet,
-                              batch_size=num_epochs,
-                              shuffle=False)
-
-    num_epochs = num_epochs
-    num_train_steps = num_epochs * len(train_Loader)
+def startTrain():
     device = torch.device("cuda")
     #Build Model
     model.to(device)
@@ -205,18 +189,19 @@ sentences_A = sentences_A.flatten().tolist()
 sentences_B = sentences_B.flatten().tolist()
 dev_label = devY.flatten().tolist()
 
-dev_inputs = tokenizer(sentences_A,
-                       sentences_B,
-                       return_tensors='pt',
-                       max_length=512,
-                       truncation=True,
-                       padding='max_length')
-dev_inputs['labels'] = torch.LongTensor([dev_label]).T
+inputs = tokenizer(sentences_A,
+                   sentences_B,
+                   return_tensors='pt',
+                   max_length=512,
+                   truncation=True,
+                   padding='max_length')
+inputs['labels'] = torch.LongTensor([dev_label]).T
+
+torchDataSet = buildDataset(inputs)
+dev_Loader = DataLoader(torchDataSet, batch_size=BATCH_SIZE, shuffle=True)
 
 
-def startEval(dev_inputs, batch_size):
-    torchDataSet = buildDataset(dev_inputs)
-    dev_Loader = DataLoader(torchDataSet, batch_size=batch_size, shuffle=False)
+def startEval():
     model.eval()
     progress_bar = tqdm(dev_Loader, leave=True)
     metric = load_metric("accuracy")
@@ -231,11 +216,11 @@ def startEval(dev_inputs, batch_size):
                             token_type_ids=token_type_ids,
                             attention_mask=attention_mask,
                             labels=labels)
-            logits = outputs.logits
-            preds = torch.argmax(logits, dim=-1)
-            metric.add_batch(predictions=preds,
-                             references=batch['labels'].flatten())
-            #print(outputs)
+
+        logits = outputs.logits
+        preds = torch.argmax(logits, dim=-1)
+        metric.add_batch(predictions=preds,
+                         references=batch['labels'].flatten())
 
     final_score = metric.compute()
     #打印最终分数
@@ -246,26 +231,32 @@ def startEval(dev_inputs, batch_size):
 #def getTop50(test_list, model, question_bank_list):
 unranked_list = []
 
-hyper_param = []
-hyper_param.append({'batch_size': 10, 'epochs': 2})
-'''
-hyper_param.append({'batch_size': 2, 'epochs': 3})
-hyper_param.append({'batch_size': 2, 'epochs': 9})
-hyper_param.append({'batch_size': 3, 'epochs': 8})
-hyper_param.append({'batch_size': 6, 'epochs': 3})
-hyper_param.append({'batch_size': 8, 'epochs': 3})
-hyper_param.append({'batch_size': 4, 'epochs': 2})
-hyper_param.append({'batch_size': 4, 'epochs': 3})
-hyper_param.append({'batch_size': 4, 'epochs': 9})
-'''
-for hp in hyper_param:
-    startTrain(train_inputs, hp['batch_size'], hp['epochs'])
-    device = torch.device('cuda')
-    checkpoint = torch.load(model_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optim.load_state_dict(checkpoint['optimizer_state_dict'])
-    model.to(device)
-    startEval(dev_inputs, 1)
+startTrain()
+device = torch.device('cuda')
+checkpoint = torch.load(model_path)
+model.load_state_dict(checkpoint['model_state_dict'])
+optim.load_state_dict(checkpoint['optimizer_state_dict'])
+model.to(device)
+startEval()
+
+
+def getTop50(query, question):
+    strOfnum = question[0].split('Q')[1]
+    numb = int(strOfnum)
+    if numb % 4000 == 0:
+        print('test sentence finished')
+    inputs = tokenizer(query,
+                       question[1],
+                       return_tensors='pt',
+                       max_length=512,
+                       truncation=True,
+                       padding='max_length')
+    outputs = model(**inputs)
+    logits = outputs.logits
+    probs = softmax(logits, dim=1)
+    prob = probs[0]
+    t = (query, question[0], prob[0].item())
+    return t
 
 
 def predInputs(query, question_bank_list):
@@ -330,8 +321,3 @@ def getProbs(input_ids, attention_mask, token_type_ids, query, qids):
 
 
 #result = getResult()
-
-#关于negative sample构造的新思路，首先把随机打乱并且去除和原正确对应的句子对的
-#neg sample(sentA和sentB)，所有的sentAs feed到bert1 中，所有的sentBs feed到bert2中
-#训练完两个bert，再分别用对应的bert预测句子对，得到的结果pooling之后求每一对的cosine similarity
-#选出分数最高的一个或者多个句子对作为neg sample
